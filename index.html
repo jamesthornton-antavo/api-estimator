@@ -76,6 +76,8 @@ h1 .dot{ color:var(--accent); }
 .chev{ display:inline-block; margin-left:8px; transition:transform .12s ease; }
 details[open] .chev{ transform:rotate(180deg); }
 .step-body{ padding:0 22px 22px; }
+.step.is-new{ border-color:color-mix(in srgb, var(--bright) 45%, var(--border)); box-shadow:0 0 0 3px color-mix(in srgb, var(--bright) 10%, transparent), 0 0 22px color-mix(in srgb, var(--bright) 22%, transparent); }
+.badge-new{ display:inline-block; vertical-align:middle; margin-left:8px; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; letter-spacing:.04em; line-height:1.5; background:color-mix(in srgb, var(--bright) 14%, transparent); color:var(--accent); border:1px solid color-mix(in srgb, var(--bright) 40%, transparent); }
 .note{ background:var(--card-soft); border-left:4px solid var(--accent); border-radius:6px; padding:10px 14px; font-size:13px; color:var(--muted); margin:0 0 16px; }
 .group-title{ font-size:13px; font-weight:600; color:var(--accent); margin:20px 0 4px; }
 .group-title:first-child{ margin-top:0; }
@@ -281,7 +283,7 @@ const F = [
   {id:"acctp", label:"Account pages viewed per visit", unit:"pages", t:"dec", d:2},
   {id:"asess", label:"App sessions per year", help:"Leave at zero if there is no app.", unit:"sessions", t:"int", d:0},
   {id:"alook", label:"Loyalty calls per app session", help:"Opening the app typically reads the member’s profile and balance, then their vouchers.", unit:"calls", t:"dec", d:2},
-  {id:"acache", label:"App loyalty reads served from cache", help:"If the app reads through middleware that keeps balances and vouchers for a few minutes, cached reads make no call to Antavo.", unit:"%", t:"pct", d:0}
+  {id:"acache", isNew:true, label:"App loyalty reads served from cache", help:"If the app reads through middleware that keeps balances and vouchers for a few minutes, cached reads make no call to Antavo.", unit:"%", t:"pct", d:0}
  ]},
  {s:3, title:"How your integration calls Antavo", sub:"The calls each customer journey makes.", note:"Set to Antavo’s standard integration pattern for a point-of-sale system and an e-commerce platform. Adjust a line if your integration design differs.", groups:[
   {g:"At the till", items:[
@@ -323,7 +325,7 @@ const F = [
   {id:"burst", label:"Busiest minute against the average minute of that hour", unit:"×", t:"dec", d:2},
   {id:"coin", label:"Channel overlap", help:"Online shopping peaks mid-morning and in the evening, store traffic at midday, so the two rarely peak in the same minute. 1.0 assumes they do.", unit:"×", t:"dec", d:0.8}
  ]},
- {s:5, title:"App push notifications", sub:"A push can bring many members into the app in the same minute.", note:"Trading traffic builds over hours; a push lands all at once. Size it on your largest send, such as a launch or a double-points day. Leave the audience at zero if there is no app.", items:[
+ {s:5, isNew:true, title:"App push notifications", sub:"A push can bring many members into the app in the same minute.", note:"Trading traffic builds over hours; a push lands all at once. Size it on your largest send, such as a launch or a double-points day. Leave the audience at zero if there is no app.", items:[
   {id:"paud", label:"Members sent your largest push", help:"Everyone the notification goes to, with notifications switched on.", unit:"members", t:"int", d:0},
   {id:"popen", label:"Share who open the app from it", help:"Take this from your own push reports. Retail pushes usually see single-digit open rates; a big launch can do better.", unit:"%", t:"pct", d:8},
   {id:"pmin", label:"Share of those opens in the busiest minute", help:"Most opens come in the first few minutes after a push lands. 15% assumes a fast first minute.", unit:"%", t:"pct", d:15},
@@ -357,7 +359,7 @@ const parse = s => { const c = String(s).replace(/[,\s£€%×x]/gi, ""); if (c 
 function fieldHTML(f){
   if (f.derived) return `<div class="field"><label>${f.label}<span class="help">${f.help}</span></label><div class="derived" id="d-${f.derived}">–</div></div>`;
   return `<div class="field" data-f="${f.id}">
-    <label for="i-${f.id}">${f.label}${f.help ? `<span class="help">${f.help}</span>` : ""}</label>
+    <label for="i-${f.id}">${f.label}${f.isNew ? `<span class="badge-new">New</span>` : ""}${f.help ? `<span class="help">${f.help}</span>` : ""}</label>
     <div class="inp" id="w-${f.id}"><input id="i-${f.id}" inputmode="decimal" autocomplete="off" value="${fmtIn(f, V[f.id])}"><span class="unit">${f.unit}</span></div>
   </div>`;
 }
@@ -367,9 +369,9 @@ function render(){
     const body = (sec.note ? `<p class="note">${sec.note}</p>` : "") +
       (sec.items ? sec.items.map(fieldHTML).join("") :
         sec.groups.map(g => `<div class="group-title">${g.g}</div>` + g.items.map(fieldHTML).join("")).join(""));
-    const head = `<span class="num">${sec.s}</span><span><h2>${sec.title}</h2><p class="sub">${sec.sub}</p></span>`;
+    const head = `<span class="num">${sec.s}</span><span><h2>${sec.title}${sec.isNew ? `<span class="badge-new">New</span>` : ""}</h2><p class="sub">${sec.sub}</p></span>`;
     if (sec.open) return `<section class="step"><div class="step-head">${head}</div><div class="step-body">${body}</div></section>`;
-    return `<details class="step" id="sec-${sec.s}"><summary>${head}<span class="state" id="st-${sec.s}">Starting values<span class="chev" aria-hidden="true">▾</span></span></summary><div class="step-body">${body}</div></details>`;
+    return `<details class="step${sec.isNew ? " is-new" : ""}" id="sec-${sec.s}"><summary>${head}<span class="state" id="st-${sec.s}">Starting values<span class="chev" aria-hidden="true">▾</span></span></summary><div class="step-body">${body}</div></details>`;
   }).join("");
   ALL.forEach(f => {
     const el = document.getElementById("i-" + f.id);
