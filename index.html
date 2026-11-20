@@ -251,6 +251,7 @@ footer{ max-width:1240px; margin:0 auto; padding:0 32px 40px; font-size:12px; co
       <div><h4>One limit, every source</h4><p>The requests-per-minute limit is shared by everything that calls Antavo with your key: tills, website and app. Sizing from the point of sale alone understates it.</p></div>
       <div><h4>The chain</h4><p>Yearly events × calls per event × fan-out × retries gives yearly calls. Divided by trading days that gives an average day. A day multiplier gives a busy or peak day. Till calls are then spread across store opening hours and lifted to the busiest till hour; online calls take the busiest hour’s share of the day’s online traffic. Dividing by 60 gives requests per minute, and the burst factor gives the busiest minute. Channel overlap trims it, because tills and website rarely peak in the same minute.</p></div>
       <div><h4>What counts</h4><p>Antavo counts every request that reaches it with your workspace’s key, from tills, website and app alike. Work the platform does internally after a request arrives is not counted, and neither are transactions queued through the Async Events API.</p></div>
+      <div><h4>Push notifications</h4><p>A push is sized as a burst rather than spread over the day: members sent × share who open × share of opens in the busiest minute × the app’s loyalty calls per open, less anything served from cache. By default it is added on top of the busiest trading minute. Caching balances and vouchers in middleware is the most effective way to keep these bursts small.</p></div>
       <div><h4>Sustained and peak limits</h4><p>Each plan has a sustained limit and a higher peak limit. Peaks above the sustained limit are allowed on no more than 5 days in any 30, so the busy-day figure should sit under the sustained limit and only the busiest days should need the peak.</p></div>
     </div>
   </details>
@@ -279,7 +280,8 @@ const F = [
   {id:"acct", label:"Signed-in sessions that open the loyalty account area", help:"Overview, vouchers, points history, rewards or challenges.", unit:"%", t:"pct", d:10},
   {id:"acctp", label:"Account pages viewed per visit", unit:"pages", t:"dec", d:2},
   {id:"asess", label:"App sessions per year", help:"Leave at zero if there is no app.", unit:"sessions", t:"int", d:0},
-  {id:"alook", label:"Loyalty lookups per app session", unit:"calls", t:"dec", d:2}
+  {id:"alook", label:"Loyalty calls per app session", help:"Opening the app typically reads the member’s profile and balance, then their vouchers.", unit:"calls", t:"dec", d:2},
+  {id:"acache", label:"App loyalty reads served from cache", help:"If the app reads through middleware that keeps balances and vouchers for a few minutes, cached reads make no call to Antavo.", unit:"%", t:"pct", d:0}
  ]},
  {s:3, title:"How your integration calls Antavo", sub:"The calls each customer journey makes.", note:"Set to Antavo’s standard integration pattern for a point-of-sale system and an e-commerce platform. Adjust a line if your integration design differs.", groups:[
   {g:"At the till", items:[
@@ -320,6 +322,13 @@ const F = [
   {id:"bzh", label:"Share of a busy day’s online traffic in its busiest hour", unit:"%", t:"pct", d:14},
   {id:"burst", label:"Busiest minute against the average minute of that hour", unit:"×", t:"dec", d:2},
   {id:"coin", label:"Channel overlap", help:"Online shopping peaks mid-morning and in the evening, store traffic at midday, so the two rarely peak in the same minute. 1.0 assumes they do.", unit:"×", t:"dec", d:0.8}
+ ]},
+ {s:5, title:"App push notifications", sub:"A push can bring many members into the app in the same minute.", note:"Trading traffic builds over hours; a push lands all at once. Size it on your largest send, such as a launch or a double-points day. Leave the audience at zero if there is no app.", items:[
+  {id:"paud", label:"Members sent your largest push", help:"Everyone the notification goes to, with notifications switched on.", unit:"members", t:"int", d:0},
+  {id:"popen", label:"Share who open the app from it", help:"Take this from your own push reports. Retail pushes usually see single-digit open rates; a big launch can do better.", unit:"%", t:"pct", d:8},
+  {id:"pmin", label:"Share of those opens in the busiest minute", help:"Most opens come in the first few minutes after a push lands. 15% assumes a fast first minute.", unit:"%", t:"pct", d:15},
+  {id:"pyear", label:"Pushes like this per year", help:"For the yearly total only. The busiest minute uses one push.", unit:"pushes", t:"int", d:12},
+  {id:"pstack", label:"Push lands in the busiest trading minute", help:"1 adds the push on top of the peak day’s busiest minute, the cautious case. 0 assumes pushes are sent away from trading peaks, so only the larger of the two counts.", unit:"0–1", t:"dec", d:1, max:1}
  ]}
 ];
 
@@ -393,21 +402,26 @@ function calc(v){
     web_reads: v.sess*v.pps*p(v.lpv)*p(v.sin)*(1-p(v.cache))*v.c_web,
     signin: v.sess*p(v.sin)*v.c_sign,
     account: v.sess*p(v.sin)*p(v.acct)*v.acctp*v.c_acct,
-    app_reads: v.asess*v.alook,
+    app_reads: v.asess*v.alook*(1-p(v.acache)),
+    app_push: v.pyear*v.paud*p(v.popen)*v.alook*(1-p(v.acache)),
     promo: v.tx*p(v.promo)*(storeSh*(v.c_cart_s+v.c_fin) + (p(v.onl)+p(v.app))*(v.c_cart_o+v.c_fin))
   };
   for (const s in src) src[s] *= k;
   const annual = Object.values(src).reduce((a,b) => a+b, 0);
   const avgDay = annual / v.days;
   const storeCalls = src.till + (src.returns + src.reg)*storeSh + v.tx*p(v.promo)*storeSh*(v.c_cart_s+v.c_fin)*k;
-  const onlineCalls = annual - storeCalls;
+  const onlineCalls = annual - storeCalls - src.app_push; // push opens are sized as a burst below, not spread over the day
   const hourRpm = (hourMult, onlineShare, dayMult) => (storeCalls/v.days*dayMult*hourMult/v.shours + onlineCalls/v.days*dayMult*p(onlineShare))/60;
   const sustained = hourRpm(v.bzf, v.bzh, v.bzd)*v.coin;
-  const peak = hourRpm(v.pkf, v.pkh, v.pkd)*v.burst*v.coin;
-  return {src, annual, avgDay, sustained, peak, flat: annual/525600, mt, storeSh};
+  const trade = hourRpm(v.pkf, v.pkh, v.pkd)*v.burst*v.coin;
+  // One push: the members who open the app in its busiest minute, each making the app's loyalty calls.
+  const push = v.paud*p(v.popen)*p(v.pmin)*v.alook*(1-p(v.acache))*k;
+  const stack = Math.min(1, Math.max(0, v.pstack));
+  const peak = trade + push*stack + (1-stack)*Math.max(0, push - trade);
+  return {src, annual, avgDay, sustained, peak, trade, push, flat: annual/525600, mt, storeSh};
 }
 
-const LABELS = {till:"Till transactions", web_checkout:"Website checkout", app_checkout:"App checkout", returns:"Returns and refunds", reg:"New member sign-ups", web_reads:"Loyalty data on website pages", signin:"Member sign-in lookups", account:"Loyalty account pages", app_reads:"App loyalty lookups", promo:"Promotion basket checks"};
+const LABELS = {till:"Till transactions", web_checkout:"Website checkout", app_checkout:"App checkout", returns:"Returns and refunds", reg:"New member sign-ups", web_reads:"Loyalty data on website pages", signin:"Member sign-in lookups", account:"Loyalty account pages", app_reads:"App loyalty lookups", app_push:"App opens from push notifications", promo:"Promotion basket checks"};
 let R = null, SUGGEST = null;
 const $ = id => document.getElementById(id);
 
@@ -425,7 +439,8 @@ function compute(){
   $("d-store").textContent = splitBad ? "Website and app add up to more than 100%" : Math.round(R.storeSh*100) + "%";
   $("d-store").style.color = splitBad ? "var(--bad-ink)" : "";
   $("r-peak").innerHTML = nf.format(Math.ceil(R.peak)) + "<small>RPM</small>";
-  $("r-flat").textContent = `Spreading the year’s calls evenly would suggest only ${nf1.format(Math.round(R.flat*10)/10)} RPM. Traffic is never that even, so the plan has to absorb the busiest minute.`;
+  $("r-flat").textContent = (R.push > 0 ? `Trading accounts for ${nf.format(Math.ceil(R.trade))} RPM of this and your largest push for up to ${nf.format(Math.ceil(R.push))}. ` : "") +
+    `Spreading the year’s calls evenly would suggest only ${nf1.format(Math.round(R.flat*10)/10)} RPM. Traffic is never that even, so the plan has to absorb the busiest minute.`;
   $("r-sus").textContent = nf.format(Math.ceil(R.sustained));
   $("r-annual").textContent = compact(R.annual);
   $("r-month").textContent = compact(R.annual/12);
@@ -465,6 +480,7 @@ function compute(){
 function summary(){
   const lines = ["Loyalty API sizing", ""];
   lines.push(`Peak RPM (busiest minute of the year): ${nf.format(Math.ceil(R.peak))}`);
+  if (R.push > 0) lines.push(`  of which trading: ${nf.format(Math.ceil(R.trade))}; largest app push: up to ${nf.format(Math.ceil(R.push))}`);
   lines.push(`Sustained RPM (busy trading day): ${nf.format(Math.ceil(R.sustained))}`);
   lines.push(`API calls per year: ${nf.format(Math.round(R.annual))}`);
   lines.push(`API calls per month (average): ${nf.format(Math.round(R.annual/12))}`);
